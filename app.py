@@ -523,9 +523,10 @@ async function ask(){
     const q=document.getElementById('q').value.trim();
     if(!q)return;
     const msgs=document.getElementById('chatMessages');
-    const btn=document.getElementById('sendBtn');
-    const input=document.getElementById('q');
-    msgs.removeChild(document.getElementById('welcome'));
+     const btn=document.getElementById('sendBtn');
+     const input=document.getElementById('q');
+     const wel=document.getElementById('welcome');
+     if(wel) msgs.removeChild(wel);
     msgs.innerHTML+='<div class="msg user"><div class="msg-bubble">'+escapeHtml(q)+'</div></div>';
     input.value='';btn.disabled=true;
     msgs.innerHTML+='<div class="msg palu typing" id="typing"><div class="msg-bubble"><div class="typing-dots"><span></span><span></span><span></span></div></div></div>';
