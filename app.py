@@ -1286,7 +1286,7 @@ import threading
 def periodic_save_stats():
     """每 5 分钟保存一次历史统计"""
     while True:
-        time.sleep(10)
+        time.sleep(300)
         try:
             save_daily_stats()
         except Exception:
