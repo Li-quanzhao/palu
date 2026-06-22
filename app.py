@@ -966,14 +966,16 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;b
 </div>
 </div>
 <div class="chat-input">
-<input id="q" placeholder="输入问题..." onkeydown="if(event.key==='Enter')ask()" autofocus>
-<button id="sendBtn" onclick="ask()">发送</button>
+<input id="q" placeholder="输入问题..." autofocus>
+<button id="sendBtn">发送</button>
 </div>
 </div>
 <script>
 let sid=localStorage.getItem('palu_sid');
 let lastQ='', lastA='';
 document.getElementById('q').focus();
+document.getElementById('sendBtn').addEventListener('click',ask);
+document.getElementById('q').addEventListener('keydown',function(e){if(e.key==='Enter')ask()});
 async function ask(){
     const q=document.getElementById('q').value.trim();
     if(!q)return;
@@ -994,7 +996,7 @@ async function ask(){
         lastA=d.answer;
         document.getElementById('typing').remove();
         const msgDiv=document.createElement('div');msgDiv.className='msg palu';
-        msgDiv.innerHTML='<div class="msg-bubble">'+escapeHtml(d.answer)+'</div><div class="feedback"><button onclick="sendFeedback(\'up\',this)" title="有帮助">👍</button><button onclick="sendFeedback(\'down\',this)" title="没帮助">👎</button></div>';
+        msgDiv.innerHTML='<div class="msg-bubble">'+escapeHtml(d.answer)+'</div><div class="feedback" data-q="'+escapeHtml(q)+'" data-a="'+escapeHtml(d.answer)+'"><button class="fb-up" title="有帮助">👍</button><button class="fb-down" title="没帮助">👎</button></div>';
         msgs.appendChild(msgDiv);
     }catch(e){
         document.getElementById('typing').remove();
@@ -1004,13 +1006,18 @@ async function ask(){
     btn.disabled=false;
     input.focus();
 }
-async function sendFeedback(rating,btn){
-    if(btn.classList.contains('active'))return;
+// 事件委托：点击反馈按钮
+document.getElementById('chatMessages').addEventListener('click',function(e){
+    const btn=e.target.closest('.fb-up,.fb-down');
+    if(!btn)return;
+    if(btn.classList.contains('active'))return;  // 同一个按钮不能重复点
+    const fbDiv=btn.closest('.feedback');
+    // 互斥：同一个 feedback 里另一个按钮取消激活
+    fbDiv.querySelectorAll('.fb-up,.fb-down').forEach(function(b){b.classList.remove('active')});
     btn.classList.add('active');
-    try{
-        await fetch('/api/feedback',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:sid,question:lastQ,answer:lastA,rating:rating,source:'web'})});
-    }catch(e){}
-}
+    const rating=btn.classList.contains('fb-up')?'up':'down';
+    fetch('/api/feedback',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:sid,question:fbDiv.dataset.q,answer:fbDiv.dataset.a,rating:rating,source:'web'})});
+});
 function escapeHtml(t){const d=document.createElement('div');d.textContent=t;return d.innerHTML}
 </script>
 </body></html>"""
@@ -1105,6 +1112,41 @@ def process_question(question, session_id=None, client_ip="unknown"):
         log.info(f"工单查询 OK | {question[:30]} | {time.time()-t0:.2f}s")
         log_answer(raw_question, reply, "ticket", session_id)
         return (reply, session_id)
+
+    # ⑥.5 简短回复兜底：单字/短词回复（如"有""没有""好的"），直接走 LLM 带上下文
+    # 【逻辑说明】用户可能在回答上一轮的问题（如"升级前有备份吗？→ 有"）
+    # 这种短词检索知识库一定低分，反而触发"不知道"保底
+    # 让 LLM 结合对话历史理解"有" = "有备份"
+    if len(question) <= 3 and history:
+        log.info(f"简短回复，跳过知识库检索，直接走 LLM | {question}")
+        if not rate_limiter.allow(f"llm:{client_ip}", RATE_LIMIT_LLM_PER_MINUTE):
+            stats.rate_limited += 1
+            reply = "请求过于频繁，请稍后再试。"
+            conversation.add_turn(session_id, raw_question, reply)
+            return (reply, session_id)
+        stats.llm_calls += 1
+        ctx_summary = ""
+        llm_messages = [{"role": "system", "content": SYSTEM_PROMPT + "\n\n请结合对话历史回答用户的简短回复。"}]
+        llm_messages.extend(history)
+        llm_messages.append({"role": "user", "content": question})
+        try:
+            resp = llm_client.chat.completions.create(
+                model=LLM_MODEL, messages=llm_messages,
+                temperature=TEMPERATURE, max_tokens=500,
+            )
+            reply = resp.choices[0].message.content
+            record_success()
+        except Exception as e:
+            record_failure()
+            stats.degrade_count += 1
+            reply = try_fallback_llm(SYSTEM_PROMPT, question, history)
+        safe = sanitize_output(reply)
+        cache.put(question, safe)
+        conversation.add_turn(session_id, raw_question, safe)
+        conversation.reset_low_score(session_id)
+        log.info(f"简短回复 LLM | {question} | {time.time()-t0:.2f}s")
+        log_answer(raw_question, safe, "short_reply_llm", session_id)
+        return (safe, session_id)
 
     # ⑦ 知识库问答（三层保底）
     cached = cache.get(question)

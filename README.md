@@ -44,7 +44,7 @@
 | 工作范围检测 | 关键词拦截 + 兜底 LLM | 零成本前置拦截，敏感词命中直接拒绝 |
 | 认证方式 | X-API-Key 静态 Token | 内部工具、调用方单一，不用 OAuth/JWT |
 | 管理看板 | Basic Auth | 浏览器原生支持，无需前端写登录逻辑 |
-| 生产服务器 | waitress | Flask dev server 不适合生产，waitress 多线程稳定 |
+| 生产服务器 | 腾讯云 + waitress | Flask dev server 不适合生产，腾讯云 + waitress 多线程稳定 |
 
 ---
 
@@ -135,7 +135,6 @@
 ├── .gitignore             # Git 忽略规则
 ├── README.md              # 本文件
 └── (运行时自动生成)
-    ├── palu_data.db       # SQLite 持久化
     ├── stats_history.json # 每日统计
     ├── unanswered_log.json# 未答问题日志
     ├── answer_log.json    # 回答记录
