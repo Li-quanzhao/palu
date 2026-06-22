@@ -1070,6 +1070,48 @@ try:
 except ImportError:
     log.info("未找到 dingtalk_bot.py，跳过钉钉机器人注册（不影响主服务）")
 
+# ============================================================
+# 热重载端点（手动触发）
+# ============================================================
+@app.route("/api/reload", methods=["POST"])
+def api_reload():
+    """
+    手动触发热重载（重启帕鲁进程）
+    需要 X-API-Key 认证，防止被恶意调用
+    """
+    log.warning("收到热重载请求，帕鲁即将重启...")
+
+    # 【逻辑说明】检测是否在 PALU_WATCHER 守护进程下运行
+    # 如果在 watcher 下：直接退出，watcher 检测到进程退出会自动拉起新进程
+    # 如果独立运行：启动一个新进程再退出
+    if os.environ.get("PALU_WATCHER") == "1":
+        log.info("在热更新守护进程管理下运行，由 watcher 自动拉起")
+        def _graceful_exit():
+            import time
+            time.sleep(1)
+            log.warning("旧帕鲁进程退出（等待 watcher 拉起）")
+            os._exit(0)
+        import threading
+        threading.Thread(target=_graceful_exit, daemon=True).start()
+        return jsonify({"answer": "帕鲁正在重启（热更新守护进程自动拉起）..."})
+    else:
+        log.info("独立运行模式，由自身 spawn 新进程")
+        import subprocess
+        import sys
+        # 在后台启动新进程
+        subprocess.Popen(
+            [sys.executable] + sys.argv,
+            cwd=os.getcwd(),
+        )
+        def _self_exit():
+            import time
+            time.sleep(1)
+            log.warning("旧帕鲁进程退出（新进程已启动）")
+            os._exit(0)
+        import threading
+        threading.Thread(target=_self_exit, daemon=True).start()
+        return jsonify({"answer": "帕鲁正在重启..."})
+
 if __name__ == "__main__":
     load_stats()
     log.info(f"帕鲁启动 → http://0.0.0.0:5000 （Waitress WSGI 服务器）")
