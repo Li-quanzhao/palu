@@ -26,7 +26,9 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 WATCH_EXTENSIONS = (".py", ".json")
 
 # 【参数可调】忽略的文件/文件夹
-WATCH_IGNORE = {"__pycache__", ".git", ".env", "palu_icon.png", "palu_icon.svg"}
+WATCH_IGNORE = {"__pycache__", ".git", ".env", "palu_icon.png", "palu_icon.svg",
+                "stats_history.json", "unanswered_log.json", "answer_log.json",
+                "feedback_log.json", "palu_data.db"}
 
 logging.basicConfig(
     level=logging.INFO,
@@ -46,6 +48,8 @@ def get_monitored_files():
         # 跳过忽略的目录
         dirs[:] = [d for d in dirs if d not in WATCH_IGNORE]
         for f in filenames:
+            if f in WATCH_IGNORE:
+                continue
             if f.endswith(WATCH_EXTENSIONS):
                 path = os.path.join(root, f)
                 try:
