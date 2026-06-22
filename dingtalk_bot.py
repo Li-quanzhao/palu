@@ -136,8 +136,9 @@ def dingtalk_callback():
 
     try:
         # 调帕鲁的问答函数，传 question 和 session_id
-        # 【参数可调】client_ip 传 "dingtalk" 表示来源是钉钉（限流走单独通道）
-        answer, _ = _ask_func(text_content, session_id, client_ip="dingtalk")
+        # 【参数可调】client_ip 按 conversationId 隔离限流
+        # 不同群聊有不同 conversationId，一个群刷屏不影响另一个群
+        answer, _ = _ask_func(text_content, session_id, client_ip=f"dingtalk_{conversation_id}" if conversation_id else "dingtalk")
     except Exception as e:
         log.error(f"钉钉回调处理异常: {e}")
         answer = "帕鲁暂时无法回答，请稍后再试或联系人工客服。"

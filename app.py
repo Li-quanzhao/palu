@@ -53,6 +53,7 @@ RATE_LIMIT_PER_MINUTE = 20   # 【参数可调】每分钟每个 IP 最多请求
 RATE_LIMIT_LLM_PER_MINUTE = 6  # 【参数可调】每分钟每个 IP 最多 LLM 调用数
 PERSISTENCE_DB = os.path.join(BASE_DIR, "palu_data.db")
 UNANSWERED_LOG = os.path.join(BASE_DIR, "unanswered_log.json")
+ANSWER_LOG = os.path.join(BASE_DIR, "answer_log.json")  # 回答记录（可追溯）
 
 # 【参数可调】安全配置
 API_AUTH_TOKEN = os.getenv("PALU_API_KEY", "")          # API 认证 Token
@@ -322,6 +323,38 @@ def log_unanswered(question, reason, score=0.0):
         log.warning(f"记录未答问题失败: {e}")
 
 # ============================================================
+# 回答记录（可追溯）
+# ============================================================
+def log_answer(question, answer, source, session_id=None, score=0.0):
+    """
+    记录帕鲁的每次回答，便于事后追溯
+    source 取值：blocked_injection / blocked_forbidden / blocked_scope /
+                transfer_human / ticket / cache / low_score / 
+                high_confidence / llm / fallback
+    """
+    record = {
+        "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "question": question[:100],
+        "answer": answer[:200],
+        "source": source,
+        "session_id": str(session_id)[:20] if session_id else "",
+        "score": round(score, 3),
+    }
+    try:
+        existing = []
+        if os.path.exists(ANSWER_LOG):
+            with open(ANSWER_LOG, "r", encoding="utf-8") as f:
+                existing = json.load(f)
+        existing.append(record)
+        # 只保留最近 5000 条，防止日志文件无限膨胀
+        if len(existing) > 5000:
+            existing = existing[-5000:]
+        with open(ANSWER_LOG, "w", encoding="utf-8") as f:
+            json.dump(existing, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        log.warning(f"记录回答失败: {e}")
+
+# ============================================================
 # 多轮对话管理
 # ============================================================
 class ConversationManager:
@@ -476,6 +509,32 @@ OUT_OF_SCOPE_KEYWORDS = [
     "你好", "你是谁", "你叫什么", "你几岁", "你会什么",
 ]
 
+def _llm_scope_check(question):
+    """用便宜模型判断模糊问题是否在售后范围内
+    只有关键词判断不出来的问题才会走到这里，成本极低（¥0.001/次）
+    """
+    prompt = f"""你是售后客服系统的工作范围判断器。只回复"是"或"否"。
+
+相关问题（售后的）：软件使用、部署配置、报错排查、License激活、工单查询、技术支持、服务器运维、API对接、系统升级、密码重置、权限设置、数据导出
+
+不相关问题：天气、新闻、娱乐、购物、闲聊、生活建议、美食、旅游、股票、明星八卦、游戏、教育、医疗
+
+问题：{question}"""
+    try:
+        resp = FALLBACK_LLM_CLIENT.chat.completions.create(
+            model=FALLBACK_LLM_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.0,
+            max_tokens=10,
+        )
+        answer = resp.choices[0].message.content.strip()
+        if answer.startswith("否"):
+            return "我是售后客服助手，只回答产品使用和售后相关问题。"
+        return None  # 是相关问题，放行
+    except Exception as e:
+        log.warning(f"LLM 范围判断失败（已放行）: {e}")
+        return None  # 兜底：放行
+
 def check_scope(question):
     """检查问题是否在工作范围内。返回 None 表示通过，返回 str 表示拦截原因"""
     q = question.lower()
@@ -487,7 +546,8 @@ def check_scope(question):
     for kw in SCOPE_KEYWORDS:
         if kw.lower() in q:
             return None  # 在工作范围内
-    return None  # 不确定的也放行，走 LLM 判断
+    # 都没命中 → 用便宜模型兜底判断（只在这种情况花钱）
+    return _llm_scope_check(question)
 
 # ============================================================
 # 降级追踪
@@ -608,7 +668,7 @@ def check_rate_limit():
 SYSTEM_PROMPT = """你是一个叫「帕鲁」的售后客服助手。说话亲切、专业、简洁。
 
 【回答规则 — 必须遵守】
-1. 每个事实性句子后必须标注来源，格式：[FAQ faq_XXX] 或 [工单系统]
+1. 每个事实性句子后必须标注来源，格式：[知识库] 或 [工单系统]
 2. 只能基于以下知识库回答，不能自行编造
 3. 如果知识库信息不足以回答问题，说"这个问题我还没学到，建议联系人工客服"
 4. 用户问的产品使用、部署配置、License激活、报错排查等问题才回答
@@ -885,6 +945,7 @@ def process_question(question, session_id=None, client_ip="unknown"):
         log.info(f"转人工 | {question[:30]}")
         reply = "已为你转接人工客服，请稍候，我们的售后工程师会尽快联系你。"
         conversation.add_turn(session_id, raw_question, reply)
+        log_answer(raw_question, reply, "transfer_human", session_id)
         return (reply, session_id)
 
     # ④ 注入检测
@@ -893,6 +954,7 @@ def process_question(question, session_id=None, client_ip="unknown"):
         log.info(f"注入拦截: {question[:40]}")
         reply = "抱歉，你的问题包含不安全的内容，请重新描述。"
         conversation.add_turn(session_id, raw_question, reply)
+        log_answer(raw_question, reply, "blocked_injection", session_id)
         return (reply, session_id)
 
     # ⑤ 禁答主题检测
@@ -901,6 +963,7 @@ def process_question(question, session_id=None, client_ip="unknown"):
         stats.forbidden_blocked += 1
         log.info(f"禁答拦截: {question[:40]}")
         conversation.add_turn(session_id, raw_question, forbidden_reason)
+        log_answer(raw_question, forbidden_reason, "blocked_forbidden", session_id)
         return (forbidden_reason, session_id)
 
     # ⑤.5 工作范围检测（零成本前置拦截 · 不调 API · 不累计转人工）
@@ -911,6 +974,7 @@ def process_question(question, session_id=None, client_ip="unknown"):
         conversation.reset_low_score(session_id)
         conversation.add_turn(session_id, raw_question, scope_reason)
         cache.put(question, scope_reason)
+        log_answer(raw_question, scope_reason, "blocked_scope", session_id)
         return (scope_reason, session_id)
 
     # ⑥ 路由判断：查工单还是查知识库
@@ -922,12 +986,14 @@ def process_question(question, session_id=None, client_ip="unknown"):
             reply = sanitize_output("未找到工单")
             conversation.add_turn(session_id, raw_question, reply)
             log.info(f"工单未找到 | {question[:30]} | {time.time()-t0:.2f}s")
+            log_answer(raw_question, reply, "ticket_not_found", session_id)
             return (reply, session_id)
         result = f"工单 #{tid}「{t['title']}」状态：{t['status']}，负责人：{t['assignee']}，最新进展：{t['detail']}"
         reply = sanitize_output(result)
         conversation.add_turn(session_id, raw_question, reply)
         conversation.reset_low_score(session_id)
         log.info(f"工单查询 OK | {question[:30]} | {time.time()-t0:.2f}s")
+        log_answer(raw_question, reply, "ticket", session_id)
         return (reply, session_id)
 
     # ⑦ 知识库问答（三层保底）
@@ -935,18 +1001,10 @@ def process_question(question, session_id=None, client_ip="unknown"):
     if cached:
         stats.cache_hits += 1
         conversation.add_turn(session_id, raw_question, cached)
-        # 缓存的是"不知道"的回答 → 继续累加低分计数
-        if cached.startswith(DONT_KNOW_PREFIX):
-            low_count = conversation.increment_low_score(session_id)
-            if low_count >= 3:
-                stats.transfer_to_human += 1
-                log.warning(f"缓存低分累积触发转人工 | {question[:30]}")
-                log_unanswered(raw_question, "缓存低分累积_转人工")
-                reply = f"抱歉，我已连续 {low_count} 次无法回答你的问题，已为你转接人工客服，请稍候。"
-                conversation.add_turn(session_id, raw_question, reply)
-                log.info(f"转人工 | {time.time()-t0:.2f}s")
-                return (reply, session_id)
+        # 【参数可调】缓存命中直接返回，不累加低分计数
+        # 防止别的用户缓存下来的"不知道"错误触发当前用户的转人工
         log.info(f"缓存命中 | {question[:30]} | {time.time()-t0:.2f}s")
+        log_answer(raw_question, cached, "cache", session_id)
         return (cached, session_id)
 
     results = search_kb(question)
@@ -961,9 +1019,11 @@ def process_question(question, session_id=None, client_ip="unknown"):
             log.warning(f"连续 {low_count} 次低分，自动转人工 | {question[:30]}")
             log_unanswered(raw_question, "连续低分_转人工", bs)
             reply = f"抱歉，我已连续 {low_count} 次无法回答你的问题，已为你转接人工客服，请稍候。"
+            log_answer(raw_question, reply, "transfer_human_low_score", session_id, bs)
         else:
             log_unanswered(raw_question, "低于相似度阈值", bs)
             reply = "抱歉，这个问题我还没学到，建议联系人工客服处理。"
+            log_answer(raw_question, reply, "low_score", session_id, bs)
         cache.put(question, reply)
         conversation.add_turn(session_id, raw_question, reply)
         log.info(f"低于阈值({bs:.2f}) | {question[:30]} | {time.time()-t0:.2f}s")
@@ -975,6 +1035,7 @@ def process_question(question, session_id=None, client_ip="unknown"):
         conversation.add_turn(session_id, raw_question, safe)
         conversation.reset_low_score(session_id)
         log.info(f"高置信({bs:.2f}) | {question[:30]} | {time.time()-t0:.2f}s")
+        log_answer(raw_question, safe, "high_confidence", session_id, bs)
         return (safe, session_id)
 
     # ⑧ 需要 LLM 生成（带对话历史）
@@ -985,6 +1046,7 @@ def process_question(question, session_id=None, client_ip="unknown"):
         reply = "请求过于频繁，请稍后再试。"
         cache.put(question, reply)
         conversation.add_turn(session_id, raw_question, reply)
+        log_answer(raw_question, reply, "rate_limited", session_id)
         return (reply, session_id)
 
     stats.llm_calls += 1
@@ -995,6 +1057,7 @@ def process_question(question, session_id=None, client_ip="unknown"):
         stats.degrade_count += 1
         log.warning("走降级模型 qwen-turbo")
         reply = try_fallback_llm(system_prompt, question, history)
+        source = "fallback"
     else:
         try:
             llm_messages = [{"role": "system", "content": system_prompt}]
@@ -1007,11 +1070,13 @@ def process_question(question, session_id=None, client_ip="unknown"):
             )
             reply = resp.choices[0].message.content
             record_success()
+            source = "llm"
         except Exception as e:
             log.error(f"DeepSeek 失败: {e}")
             record_failure()
             stats.degrade_count += 1
             reply = try_fallback_llm(system_prompt, question, history)
+            source = "fallback"
 
     safe = sanitize_output(reply)
     cache.put(question, safe)
@@ -1019,6 +1084,7 @@ def process_question(question, session_id=None, client_ip="unknown"):
     conversation.reset_low_score(session_id)
     elapsed = time.time() - t0
     log.info(f"LLM 生成 OK | {question[:30]} | {elapsed:.2f}s")
+    log_answer(raw_question, safe, source, session_id, bs)
     return (safe, session_id)
 
 
