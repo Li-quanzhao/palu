@@ -1216,7 +1216,7 @@ def api_ask():
     return jsonify({"answer": answer, "session_id": sid})
 
 
-@app.route("/api/feedback", methods=["POST"])
+@app.route("/api/feedback", methods=["GET", "POST"])
 def api_feedback():
     """用户反馈接口（赞/踩）"""
     if request.method == "GET":
