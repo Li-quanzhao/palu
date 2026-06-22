@@ -1279,6 +1279,24 @@ def load_stats():
 atexit.register(save_stats)
 
 # ============================================================
+# 定时统计持久化（每 5 分钟存一次，确保历史图表不中断）
+# ============================================================
+import threading
+
+def periodic_save_stats():
+    """每 5 分钟保存一次历史统计"""
+    while True:
+        time.sleep(300)
+        try:
+            save_daily_stats()
+        except Exception:
+            pass
+
+_thread = threading.Thread(target=periodic_save_stats, daemon=True)
+_thread.start()
+log.info("定时统计持久化已启动（每 5 分钟）")
+
+# ============================================================
 # 钉钉机器人（可选）
 # ============================================================
 try:
