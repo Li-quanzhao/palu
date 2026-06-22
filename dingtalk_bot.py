@@ -143,12 +143,17 @@ def dingtalk_callback():
         log.error(f"钉钉回调处理异常: {e}")
         answer = "帕鲁暂时无法回答，请稍后再试或联系人工客服。"
 
-    # ⑦ 返回回复（钉钉会投递到群里）
+    # ⑦ 追加反馈提示文字
+    # 【逻辑说明】钉钉没有交互按钮，用文字提示用户回复赞/踩
+    feedback_prompt = "\n\n---\n觉得有帮助回复：赞 👍\n没帮助回复：踩 👎"
+    answer_with_prompt = answer + feedback_prompt
+
+    # ⑧ 返回回复（钉钉会投递到群里）
     # 【逻辑说明】钉钉回调的返回值就是机器人的回复内容
     # 消息长度限制 2000 字符（钉钉限制）
     return jsonify({
         "msgtype": "text",
         "text": {
-            "content": answer[:2000]
+            "content": answer_with_prompt[:2000]
         }
     })

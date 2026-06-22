@@ -1056,6 +1056,32 @@ def process_question(question, session_id=None, client_ip="unknown"):
     session_id, session = conversation.get_or_create(session_id)
     history = conversation.get_history(session_id)
 
+    # ②.5 赞/踩反馈（快捷通道，不检索知识库、不调 LLM）
+    # 【逻辑说明】钉钉用户回复"赞"/"踩"时，从对话历史提取最近一问一答记录反馈
+    feedback_keywords = ["赞", "踩", "有帮助", "没帮助", "没用", "有用", "good", "bad"]
+    if question.strip() in feedback_keywords:
+        if not history:
+            reply = "请先提问，再告诉我回答是否有帮助 😊"
+            conversation.add_turn(session_id, raw_question, reply)
+            return (reply, session_id)
+        last_q, last_a = "", ""
+        # 从对话历史中提取最近一条 user + assistant 的消息对
+        msgs = [m for m in history if m["role"] in ("user", "assistant")]
+        for i in range(len(msgs)-1, -1, -1):
+            if msgs[i]["role"] == "assistant":
+                last_a = msgs[i]["content"]
+                break
+        for i in range(len(msgs)-1, -1, -1):
+            if msgs[i]["role"] == "user":
+                last_q = msgs[i]["content"]
+                break
+        rating = "up" if question in ["赞", "有帮助", "有用", "good"] else "down"
+        log_feedback(session_id, last_q, last_a, rating, source="dingtalk")
+        log.info(f"钉钉赞/踩反馈 | {rating} | Q:{last_q[:30]}")
+        reply = f"感谢你的反馈！{'你的认可对帕鲁很重要 💪' if rating == 'up' else '帕鲁会继续努力改进 💪'}"
+        conversation.add_turn(session_id, raw_question, reply)
+        return (reply, session_id)
+
     # ③ 明确要求转人工
     if any(kw in question for kw in ["转人工", "人工客服", "找人工", "转接人工"]):
         stats.transfer_to_human += 1
