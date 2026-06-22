@@ -23,7 +23,12 @@ from waitress import serve
 # 脚本所在目录（确保文件引用不受运行目录影响）
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-load_dotenv(os.path.join(BASE_DIR, "..", ".env"))
+# 【逻辑说明】先找脚本同目录下的 .env，找不到再找上级目录
+# 这样服务器（.env 在同目录）和本地（.env 在上级目录）都能自动适配
+_env_path = os.path.join(BASE_DIR, ".env")
+if not os.path.exists(_env_path):
+    _env_path = os.path.join(BASE_DIR, "..", ".env")
+load_dotenv(_env_path)
 
 # ============================================================
 # 日志
