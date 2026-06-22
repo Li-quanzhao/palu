@@ -54,6 +54,7 @@ RATE_LIMIT_LLM_PER_MINUTE = 6  # 【参数可调】每分钟每个 IP 最多 LLM
 PERSISTENCE_DB = os.path.join(BASE_DIR, "palu_data.db")
 UNANSWERED_LOG = os.path.join(BASE_DIR, "unanswered_log.json")
 ANSWER_LOG = os.path.join(BASE_DIR, "answer_log.json")  # 回答记录（可追溯）
+FEEDBACK_LOG = os.path.join(BASE_DIR, "feedback_log.json")  # 用户反馈记录
 
 # 【参数可调】安全配置
 API_AUTH_TOKEN = os.getenv("PALU_API_KEY", "")          # API 认证 Token
@@ -160,7 +161,7 @@ class Stats:
 
 stats = Stats()
 STATS_HISTORY_FILE = os.path.join(BASE_DIR, "stats_history.json")  # 历史统计数据文件
-API_AUTH_BYPASS_PATHS = ["/", "/admin", "/api/status", "/api/stats/history"]  # 无需 API Token 的路径
+API_AUTH_BYPASS_PATHS = ["/", "/admin", "/api/status", "/api/stats/history", "/api/feedback", "/api/unanswered/suggestions"]  # 无需 API Token 的路径
 
 # ============================================================
 # 安全认证函数
@@ -353,6 +354,68 @@ def log_answer(question, answer, source, session_id=None, score=0.0):
             json.dump(existing, f, ensure_ascii=False, indent=2)
     except Exception as e:
         log.warning(f"记录回答失败: {e}")
+
+# ============================================================
+# 用户反馈记录（反馈飞轮）
+# ============================================================
+def log_feedback(session_id, question, answer, rating, source="web"):
+    """
+    记录用户对回答的反馈（赞/踩），用于后续质量分析
+    
+    Args:
+        session_id: 会话 ID
+        question: 用户问题
+        answer: 帕鲁的回答
+        rating: "up" 或 "down"
+        source: "web" 或 "dingtalk"
+    """
+    record = {
+        "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "session_id": str(session_id)[:20] if session_id else "",
+        "question": question[:100],
+        "answer": answer[:200],
+        "rating": rating,
+        "source": source,
+    }
+    try:
+        existing = []
+        if os.path.exists(FEEDBACK_LOG):
+            with open(FEEDBACK_LOG, "r", encoding="utf-8") as f:
+                existing = json.load(f)
+        existing.append(record)
+        if len(existing) > 10000:
+            existing = existing[-10000:]
+        with open(FEEDBACK_LOG, "w", encoding="utf-8") as f:
+            json.dump(existing, f, ensure_ascii=False, indent=2)
+        log.info(f"反馈已记录 | {rating} | {question[:30]}")
+    except Exception as e:
+        log.warning(f"记录反馈失败: {e}")
+
+
+def get_unanswered_summary(min_count=2):
+    """统计高频未答问题，用于建议补充知识库"""
+    try:
+        if not os.path.exists(UNANSWERED_LOG):
+            return []
+        with open(UNANSWERED_LOG, "r", encoding="utf-8") as f:
+            records = json.load(f)
+    except Exception:
+        return []
+    
+    # 按问题统计频率
+    freq = {}
+    for r in records:
+        q = r.get("question", "").strip()
+        if not q or len(q) < 4:  # 太短的问题跳过
+            continue
+        freq[q] = freq.get(q, 0) + 1
+    
+    # 筛选高频问题
+    suggestions = []
+    for q, count in sorted(freq.items(), key=lambda x: -x[1]):
+        if count >= min_count:
+            suggestions.append({"question": q, "count": count})
+    return suggestions[:10]  # 最多返回 10 条
 
 # ============================================================
 # 多轮对话管理
@@ -771,6 +834,8 @@ tr:hover{background:#f8f9fa}
 <div class="chart-box"><h3>⚡ 缓存命中率</h3><canvas id="chartCacheRate"></canvas></div>
 <div class="chart-box"><h3>🤖 LLM vs 缓存调用</h3><canvas id="chartLlmVsCache"></canvas></div>
 <div class="chart-box full"><h3>📋 每日明细</h3><div class="table-wrap"><table id="detailTable"><thead><tr><th>日期</th><th>请求数</th><th>缓存命中</th><th>命中率</th><th>范围拦截</th><th>LLM调用</th><th>降级</th><th>转人工</th><th>限流</th><th>费用(¥)</th></tr></thead><tbody id="detailBody"></tbody></table></div></div>
+<div class="chart-box"><h3>👍 反馈统计</h3><canvas id="chartFeedback"></canvas></div>
+<div class="chart-box"><h3>📝 知识库建议</h3><div id="suggestionList" style="font-size:13px;line-height:1.8;color:#555"><p style="color:#999">暂无数据</p></div></div>
 </div>
 </div>
 <script>
@@ -788,6 +853,8 @@ async function loadData(){
     renderChartCacheRate(data);
     renderChartLlmVsCache(data);
     renderTable(data);
+    renderFeedback();
+    renderSuggestions();
 }
 function renderCards(now){
     document.getElementById('summaryCards').innerHTML=
@@ -816,6 +883,26 @@ function renderTable(data){
         const badge=rate>=80?'<span class="badge green">高</span>':rate>=50?'<span class="badge orange">中</span>':'<span class="badge red">低</span>';
         tbody.innerHTML+='<tr><td>'+d.date+'</td><td>'+d.total_requests+'</td><td>'+d.cache_hits+'</td><td>'+d.cache_hit_rate+' '+badge+'</td><td>'+(d.scope_blocked||0)+'</td><td>'+d.llm_calls+'</td><td>'+d.degrade_count+'</td><td>'+d.transfer_to_human+'</td><td>'+d.rate_limited+'</td><td>'+d.estimated_cost_yuan.toFixed(4)+'</td></tr>';
     });
+}
+async function renderFeedback(){
+    const ctx=document.getElementById('chartFeedback');
+    if(!ctx)return;
+    try{
+        const r=await fetch('/api/feedback').then(r=>r.json());
+        const labels=r.map(d=>d.date), up=r.map(d=>d.up), down=r.map(d=>d.down);
+        if(labels.length===0){ctx.parentElement.innerHTML='<h3>👍 反馈统计</h3><p style="color:#999;padding:20px;text-align:center">暂无反馈数据</p>';return}
+        new Chart(ctx,{type:'bar',data:{labels,datasets:[{label:'赞',data:up,backgroundColor:'#52c41a'},{label:'踩',data:down,backgroundColor:'#ff4d4f'}]},options:{responsive:true,plugins:{legend:{position:'top'}}}});
+    }catch(e){}
+}
+async function renderSuggestions(){
+    const el=document.getElementById('suggestionList');
+    if(!el)return;
+    try{
+        const r=await fetch('/api/unanswered/suggestions?min_count=2');
+        const data=await r.json();
+        if(data.length===0){el.innerHTML='<p style="color:#999">暂无高频未答问题</p>';return}
+        el.innerHTML='<p style="color:#888;margin-bottom:8px">以下问题被多次问到但帕鲁答不上来，建议补充到知识库：</p>'+data.map(d=>'<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #f0f0f0"><span>'+escapeHtml(d.question)+'</span><span class="badge orange">被问 '+d.count+' 次</span></div>').join('');
+    }catch(e){}
 }
 loadData();
 </script>
@@ -857,6 +944,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;b
 .typing-dots span:nth-child(1){animation-delay:-.32s}
 .typing-dots span:nth-child(2){animation-delay:-.16s}
 @keyframes bounce{0%,80%,100%{transform:scale(0)}40%{transform:scale(1)}}
+.feedback{display:flex;gap:8px;margin-top:4px;margin-left:6px}
+.feedback button{background:none;border:1px solid #ddd;border-radius:12px;padding:2px 10px;font-size:13px;cursor:pointer;color:#999;transition:all .2s}
+.feedback button:hover{border-color:#1a73e8;color:#1a73e8}
+.feedback button.active{background:#1a73e8;color:#fff;border-color:#1a73e8}
 .welcome-msg{text-align:center;color:#999;font-size:13px;padding:40px 20px;line-height:1.8}
 .welcome-msg h3{color:#333;font-size:16px;margin-bottom:8px}
 </style>
@@ -881,10 +972,12 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;b
 </div>
 <script>
 let sid=localStorage.getItem('palu_sid');
+let lastQ='', lastA='';
 document.getElementById('q').focus();
 async function ask(){
     const q=document.getElementById('q').value.trim();
     if(!q)return;
+    lastQ=q;
     const msgs=document.getElementById('chatMessages');
      const btn=document.getElementById('sendBtn');
      const input=document.getElementById('q');
@@ -898,8 +991,11 @@ async function ask(){
         const r=await fetch('/api/ask',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q,session_id:sid})});
         const d=await r.json();
         if(d.session_id){sid=d.session_id;localStorage.setItem('palu_sid',sid)}
+        lastA=d.answer;
         document.getElementById('typing').remove();
-        msgs.innerHTML+='<div class="msg palu"><div class="msg-bubble">'+escapeHtml(d.answer)+'</div></div>';
+        const msgDiv=document.createElement('div');msgDiv.className='msg palu';
+        msgDiv.innerHTML='<div class="msg-bubble">'+escapeHtml(d.answer)+'</div><div class="feedback"><button onclick="sendFeedback(\'up\',this)" title="有帮助">👍</button><button onclick="sendFeedback(\'down\',this)" title="没帮助">👎</button></div>';
+        msgs.appendChild(msgDiv);
     }catch(e){
         document.getElementById('typing').remove();
         msgs.innerHTML+='<div class="msg palu"><div class="msg-bubble">抱歉，网络开小差了，请稍后再试。</div></div>';
@@ -907,6 +1003,13 @@ async function ask(){
     msgs.scrollTop=msgs.scrollHeight;
     btn.disabled=false;
     input.focus();
+}
+async function sendFeedback(rating,btn){
+    if(btn.classList.contains('active'))return;
+    btn.classList.add('active');
+    try{
+        await fetch('/api/feedback',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:sid,question:lastQ,answer:lastA,rating:rating,source:'web'})});
+    }catch(e){}
 }
 function escapeHtml(t){const d=document.createElement('div');d.textContent=t;return d.innerHTML}
 </script>
@@ -1111,6 +1214,49 @@ def api_ask():
 
     answer, sid = process_question(question, session_id, client_ip)
     return jsonify({"answer": answer, "session_id": sid})
+
+
+@app.route("/api/feedback", methods=["POST"])
+def api_feedback():
+    """用户反馈接口（赞/踩）"""
+    if request.method == "GET":
+        # 返回按天汇总的反馈统计
+        try:
+            if not os.path.exists(FEEDBACK_LOG):
+                return jsonify([])
+            with open(FEEDBACK_LOG, "r", encoding="utf-8") as f:
+                records = json.load(f)
+        except Exception:
+            return jsonify([])
+        daily = {}
+        for r in records:
+            d = r.get("time", "")[:10]
+            if d not in daily:
+                daily[d] = {"date": d, "up": 0, "down": 0}
+            daily[d][r.get("rating", "up")] += 1
+        return jsonify(sorted(daily.values(), key=lambda x: x["date"]))
+    
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"status": "error", "msg": "请发送 JSON 格式的请求"}), 400
+    session_id = data.get("session_id", "")
+    question = data.get("question", "").strip()
+    answer = data.get("answer", "").strip()
+    rating = data.get("rating", "")
+    source = data.get("source", "web")
+    if rating not in ("up", "down"):
+        return jsonify({"status": "error", "msg": "rating 必须是 up 或 down"}), 400
+    log_feedback(session_id, question, answer, rating, source)
+    return jsonify({"status": "ok"})
+
+
+@app.route("/api/unanswered/suggestions", methods=["GET"])
+def api_unanswered_suggestions():
+    """返回高频未答问题建议（补充知识库用）"""
+    min_count = request.args.get("min_count", 2, type=int)
+    suggestions = get_unanswered_summary(min_count)
+    return jsonify(suggestions)
+
 
 # ============================================================
 # 启动
