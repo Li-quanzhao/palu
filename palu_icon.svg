@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200">
+  <!-- 背景圆 -->
+  <circle cx="100" cy="100" r="95" fill="#4A90D9"/>
+  <circle cx="100" cy="100" r="85" fill="#5BA0E8"/>
+
+  <!-- 机器人头部 -->
+  <rect x="55" y="35" width="90" height="85" rx="20" ry="20" fill="white"/>
+
+  <!-- 眼睛 -->
+  <circle cx="78" cy="65" r="12" fill="#4A90D9"/>
+  <circle cx="122" cy="65" r="12" fill="#4A90D9"/>
+  <circle cx="78" cy="65" r="5" fill="white"/>
+  <circle cx="122" cy="65" r="5" fill="white"/>
+
+  <!-- 微笑 -->
+  <path d="M 75 90 Q 100 110 125 90" fill="none" stroke="#4A90D9" stroke-width="4" stroke-linecap="round"/>
+
+  <!-- 天线 -->
+  <line x1="100" y1="35" x2="100" y2="15" stroke="#4A90D9" stroke-width="4" stroke-linecap="round"/>
+  <circle cx="100" cy="12" r="6" fill="#FF6B6B"/>
+
+  <!-- 身体 -->
+  <rect x="65" y="125" width="70" height="55" rx="10" ry="10" fill="white"/>
+
+  <!-- 胸口P字母 -->
+  <text x="100" y="158" font-family="Arial" font-size="28" font-weight="bold" fill="#4A90D9" text-anchor="middle">P</text>
+
+  <!-- 手臂 -->
+  <rect x="35" y="135" width="25" height="10" rx="5" fill="white"/>
+  <rect x="140" y="135" width="25" height="10" rx="5" fill="white"/>
+</svg>
