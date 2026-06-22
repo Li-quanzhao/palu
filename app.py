@@ -161,7 +161,7 @@ class Stats:
 
 stats = Stats()
 STATS_HISTORY_FILE = os.path.join(BASE_DIR, "stats_history.json")  # 历史统计数据文件
-API_AUTH_BYPASS_PATHS = ["/", "/admin", "/api/status", "/api/stats/history", "/api/feedback", "/api/unanswered/suggestions"]  # 无需 API Token 的路径
+API_AUTH_BYPASS_PATHS = ["/", "/admin", "/api/status", "/api/stats/history", "/api/feedback", "/api/unanswered/suggestions", "/dingtalk/callback"]  # 无需 API Token 的路径
 
 # ============================================================
 # 安全认证函数

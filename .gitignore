@@ -1,2 +1,34 @@
+# 环境变量
 .env
+
+# 日志文件
 *.log
+
+# 运行时数据（自动生成，不上传）
+palu_data.db
+palu_data.db-shm
+palu_data.db-wal
+answer_log.json
+unanswered_log.json
+feedback_log.json
+stats_history.json
+
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+
+# 测试临时文件（非核心代码）
+test_fb.json
+test_q.json
+test_q2.json
+test_q3.json
+test_q4.json
+test_q5.json
+test_q6.json
+test_un.json
+test_un2.json
+test_v.json
+
+# SSL 证书（本地生成）
+server_key.pem
